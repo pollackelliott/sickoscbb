@@ -991,6 +991,7 @@ async function init() {
       });
     }
     console.log(`Draft: ${draftData.length} total picks, ${suppCount} supplemental`);
+  } else { draftData = []; console.error('Draft error:', drRes.reason); }
 
   // ── Transaction Log ──
   // Row 0 of sheet ("All","Any",...) is consumed by gviz as column headers
@@ -1158,18 +1159,16 @@ function renderScoreboard(errors) {
         const praCls = isDNP ? '' : pra>=40 ? 'pra-fire' : pra>=28 ? 'pra-hot' : '';
         const teamTag = scoreFilter === 'ALL'
           ? `<span style="font-size:10px;color:var(--muted)"> · ${p.Team||''}</span>` : '';
-        // Only clickable if player is in playerStats (has a team)
-        const sbClickable = p.Team ? `data-action="view-player" data-team="${p.Team}" data-player="${p.Player||''}" style="cursor:pointer"` : '';
-        return `<div class="player-row" ${sbClickable}>
+        return `<div class="player-row" data-action="view-player" data-team="${p.Team||''}" data-player="${(p.Player||'').replace(/"/g,'')}" style="cursor:pointer">
           <div class="player-info" style="pointer-events:none">
             <div class="player-name">${p.Player||''}${teamTag}</div>
             <div class="player-school">${schoolTag(p.School||'')} ${p.Conference||''}</div>
           </div>
           <span class="player-status ${sCls}" style="pointer-events:none">${status}</span>
           <div class="pra-block" style="pointer-events:none">
-            ${isDNP ? `<div class="pra-big" style="font-size:22px;color:var(--red)">DNP</div>`
-                    : `<div class="pra-big ${praCls}">${pra||'–'}</div>
-                       ${pra>0?`<div class="pra-breakdown">${Number(p.Points)||0}p ${Number(p.Rebounds)||0}r ${Number(p.Assists)||0}a</div>`:''}`}
+            ${isDNP ? '<div class="pra-big" style="font-size:22px;color:var(--red)">DNP</div>'
+                    : '<div class="pra-big ' + praCls + '">' + (pra||'–') + '</div>' +
+                      (pra>0?'<div class="pra-breakdown">' + (Number(p.Points)||0) + 'p ' + (Number(p.Rebounds)||0) + 'r ' + (Number(p.Assists)||0) + 'a</div>':'')}
           </div>
         </div>`;
       }).join('');
@@ -1478,15 +1477,13 @@ function renderDraft() {
     const rows = picks.map(p => {
       const isMe   = p.team === myTeam;
       const isPass = !p.player;
-      const draftClickable = !isPass ? `data-action="view-player" data-team="${p.team}" data-player="${p.player}" style="cursor:pointer"` : '';
-      return `<div class="draft-row" ${draftClickable}>
-        <div class="draft-pick-num">#${p.overall}</div>
+      return `<div class="draft-row" ${isPass ? '' : 'data-action="view-player" data-team="' + p.team + '" data-player="' + p.player.replace(/"/g,'') + '" style="cursor:pointer"'}>
+        <div class="draft-pick-num" style="pointer-events:none">#${p.overall}</div>
         <div class="draft-player-info" style="pointer-events:none">
-          ${isPass
-            ? `<div class="draft-player-name draft-pass">— pass —</div>`
-            : `<div class="draft-player-name">${p.player}</div>`}
+          ${isPass ? '<div class="draft-player-name draft-pass">— pass —</div>'
+                   : '<div class="draft-player-name">' + p.player + '</div>'}
           <div class="draft-player-meta">
-            ${isPass ? '' : `${schoolTag(p.school)} <span>${p.conf||''}</span>`}
+            ${isPass ? '' : schoolTag(p.school) + ' <span>' + (p.conf||'') + '</span>'}
           </div>
         </div>
         <div class="draft-team ${isMe?'is-me':''}" style="pointer-events:none">${p.team}</div>
@@ -1540,7 +1537,7 @@ function renderTransactions() {
 
   const cards = rows.slice(0,150).map(r => {
     const isMe = r.team === myTeam;
-    return `<div class="txn-row" data-action="view-player" data-team="${r.team}" data-player="${r.player}" style="cursor:pointer">
+    return `<div class="txn-row" data-action="view-player" data-team="${r.team}" data-player="${r.player.replace(/"/g,'')}" style="cursor:pointer">
       <div class="txn-date" style="pointer-events:none">${fmtDate(r.date)}</div>
       <div class="txn-info" style="pointer-events:none">
         <div class="txn-player">${r.player}</div>
