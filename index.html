@@ -790,6 +790,8 @@ let allSickos  = [];
 // Transaction filters
 let txnTeamFilter = 'ALL';
 let txnTypeFilter = 'ANY';
+let draftTeamFilter = 'ALL';
+let draftConfFilter = 'ALL';
 
 // ─── EVENT DELEGATION ──────────────────────────────────────────────────────────
 // All dynamic content uses data-action + data-* attributes.
@@ -807,6 +809,7 @@ document.addEventListener('click', function(e) {
   else if (action === 'set-stat-view') { statView = el.dataset.view; statSort = statView === 'total' ? 'total' : 'prag'; renderStats(); }
   else if (action === 'set-txn-team') { txnTeamFilter = el.dataset.team; renderTransactions(); }
   else if (action === 'set-txn-type') { txnTypeFilter = el.dataset.type; renderTransactions(); }
+  else if (action === 'jump-round')   { jumpToRound(el.dataset.round); }
   else if (action === 'select-my-team') { selectMyTeam(el.dataset.team); }
 });
 
@@ -816,6 +819,8 @@ document.addEventListener('change', function(e) {
   if (e.target.id === 'stat-conf-select') { statConfFilter = e.target.value; renderStats(); }
   if (e.target.id === 'txn-team-select')  { txnTeamFilter  = e.target.value; renderTransactions(); }
   if (e.target.id === 'txn-type-select')  { txnTypeFilter  = e.target.value; renderTransactions(); }
+  if (e.target.id === 'draft-team-select') { draftTeamFilter = e.target.value; renderDraft(); }
+  if (e.target.id === 'draft-conf-select') { draftConfFilter = e.target.value; renderDraft(); }
   if (e.target.id === 'date-picker-input') { onPickerChange(e.target.value); }
 });
 
@@ -951,38 +956,59 @@ async function init() {
   // Cols: 0=OverallPick, 1=Round, 2=Pick, 3=Team, 4=Player, 5=School, 6=Conference
   if (drRes.status === 'fulfilled') {
     draftData = [];
+    const validRounds = new Set(['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','Nov','Dec','Jan','Feb']);
     for (let i = 0; i < drRes.value.length; i++) {
-      const r     = drRes.value[i];
-      const round = String(cell(r,1)||'').trim();
-      const team  = cell(r,3);
-      if (!round || round === 'Month' || round === 'Round' || !team) continue;
+      const r       = drRes.value[i];
+      const overall = String(cell(r,0)||'').trim();
+      const round   = String(cell(r,1)||'').trim();
+      // Skip Month header rows (where overall = 'Overall Pick') and invalid rounds
+      if (overall === 'Overall Pick' || overall === '' || !validRounds.has(round)) continue;
+      const team   = cell(r,3);
+      const player = String(cell(r,4)||'').trim();
+      if (!team) continue;
       draftData.push({
-        overall: cell(r,0),
+        overall,
         round,
-        pick:    cell(r,2),
-        team:    String(team),
-        player:  String(cell(r,4)||'').trim(),
-        school:  String(cell(r,5)||'').trim(),
-        conf:    String(cell(r,6)||'').trim(),
+        pick:   String(cell(r,2)||'').trim(),
+        team:   String(team),
+        player: player === '-' ? '' : player,
+        school: String(cell(r,5)||'').trim(),
+        conf:   String(cell(r,6)||'').trim(),
       });
     }
   } else { draftData = []; console.error('Draft error:', drRes.reason); }
 
   // ── Transaction Log ──
-  // gviz consumes row 0 ("All","Any",...) as cols
-  // rows[0] = blank row, rows[1] = real header, rows[2+] = data
+  // Row 0 of sheet ("All","Any",...) is consumed by gviz as column headers
+  // Row 1 (blank) → gviz rows[0]
+  // Row 2 (real header: Team,Player,...) → gviz rows[1]  
+  // Row 3+ (data) → gviz rows[2+]
+  // BUT: LET formulas may render differently in gviz — try both skip=1 and skip=2
   // Cols: 0=Team, 1=Player, 2=School, 3=Conference, 4=Transaction, 5=Type, 6=Date
   if (txRes.status === 'fulfilled') {
     txnData = [];
-    for (let i = 2; i < txRes.value.length; i++) {
-      const r      = txRes.value[i];
+    const rows = txRes.value;
+    // Find the first row that looks like real data (Team is a manager name)
+    const managerSet = new Set(allSickos);
+    let dataStart = 0;
+    for (let i = 0; i < Math.min(rows.length, 5); i++) {
+      const maybeTeam = String(cell(rows[i], 0)||'').trim();
+      if (managerSet.has(maybeTeam)) { dataStart = i; break; }
+      // Also accept if it looks like data (has a date in col 6)
+      const maybeDate = parseDate(cell(rows[i], 6));
+      if (maybeDate) { dataStart = i; break; }
+    }
+    for (let i = dataStart; i < rows.length; i++) {
+      const r      = rows[i];
       const team   = cell(r,0);
       const player = cell(r,1);
       const txn    = cell(r,4);
       const date   = parseDate(cell(r,6));
       if (!team || !player || !txn || !date) continue;
+      const teamStr = String(team).trim();
+      if (teamStr === 'Team' || teamStr === 'All') continue; // skip header rows
       txnData.push({
-        team:   String(team),
+        team:   teamStr,
         player: String(player),
         school: String(cell(r,2)||''),
         conf:   String(cell(r,3)||''),
@@ -991,8 +1017,8 @@ async function init() {
         date,
       });
     }
-    // Sort newest first
     txnData.sort((a,b) => b.date.localeCompare(a.date));
+    console.log(`Loaded ${txnData.length} transactions (dataStart=${dataStart})`);
   } else { txnData = []; console.error('Transactions error:', txRes.reason); }
 
   scoreFilter = myTeam || 'ALL';
@@ -1386,55 +1412,92 @@ function updateHeaderTeam() {
 }
 
 // ─── DRAFT ─────────────────────────────────────────────────────────────────────
+function jumpToRound(round) {
+  const el = document.getElementById('draft-round-' + round);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 function renderDraft() {
   navStack = [];
   if (!draftData) { setApp(loadingHTML()); return; }
 
-  // Group by round, preserving original order
+  const suppRounds = ['Nov','Dec','Jan','Feb'];
+
+  // Build conference list from draft data
+  const draftConfs = ['ALL', ...Array.from(new Set(draftData.map(p=>p.conf).filter(Boolean))).sort()];
+  const teamOpts = ['ALL',...allSickos].map(t =>
+    `<option value="${t}" ${draftTeamFilter===t?'selected':''}>${t==='ALL'?'All Teams':t}</option>`).join('');
+  const confOpts = draftConfs.map(c =>
+    `<option value="${c}" ${draftConfFilter===c?'selected':''}>${c==='ALL'?'All Conferences':c}</option>`).join('');
+
+  // Apply filters
+  let filtered = [...draftData];
+  if (draftTeamFilter !== 'ALL') filtered = filtered.filter(p => p.team === draftTeamFilter);
+  if (draftConfFilter !== 'ALL') filtered = filtered.filter(p => p.conf === draftConfFilter);
+
+  // Round order - preserve original
   const roundOrder = [];
+  const seenR = new Set();
+  draftData.forEach(p => { if (!seenR.has(p.round)) { seenR.add(p.round); roundOrder.push(p.round); } });
+
+  // Group filtered picks by round
   const byRound = {};
-  draftData.forEach(p => {
-    if (!byRound[p.round]) { byRound[p.round] = []; roundOrder.push(p.round); }
-    byRound[p.round].push(p);
-  });
+  filtered.forEach(p => { if (!byRound[p.round]) byRound[p.round] = []; byRound[p.round].push(p); });
 
-  // Sort each round by pick number
-  Object.values(byRound).forEach(picks =>
-    picks.sort((a,b) => (Number(a.pick)||0) - (Number(b.pick)||0))
-  );
+  // Jump buttons
+  const jumpBtns = `<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:14px">
+    ${roundOrder.map(r => `<button class="sort-btn" style="padding:4px 9px;font-size:11px;min-width:0" data-action="jump-round" data-round="${r}">${r}</button>`).join('')}
+  </div>`;
 
+  // Render sections
   const sections = roundOrder.map(round => {
-    const isSupp = ['Nov','Dec','Jan','Feb'].includes(String(round));
-    const label  = isSupp ? `${round} Supplemental` : `Round ${round}`;
+    const picks = byRound[round];
+    if (!picks || picks.length === 0) return '';
+    picks.sort((a,b) => (Number(a.pick)||0) - (Number(b.pick)||0));
+    const isSupp = suppRounds.includes(round);
+    const label  = isSupp ? `${round} Supplemental Draft` : `Round ${round}`;
+    const total  = draftData.filter(p=>p.round===round).length;
+    const badge  = picks.length < total ? `${picks.length} of ${total}` : `${total} picks`;
 
-    const rows = byRound[round].map(p => {
-      const isPass   = !p.player || p.player === '-';
-      const isMe     = p.team === myTeam;
-      const schoolHtml = isPass ? '' : schoolTag(p.school);
-
+    const rows = picks.map(p => {
+      const isMe   = p.team === myTeam;
+      const isPass = !p.player;
       return `<div class="draft-row">
-        <div class="draft-pick-num">#${p.overall||'—'}</div>
+        <div class="draft-pick-num">#${p.overall}</div>
         <div class="draft-player-info">
           ${isPass
             ? `<div class="draft-player-name draft-pass">— pass —</div>`
             : `<div class="draft-player-name">${p.player}</div>`}
           <div class="draft-player-meta">
-            ${isPass ? '' : `${schoolHtml} <span>${p.conf||''}</span>`}
+            ${isPass ? '' : `${schoolTag(p.school)} <span>${p.conf||''}</span>`}
           </div>
         </div>
         <div class="draft-team ${isMe?'is-me':''}">${p.team}</div>
       </div>`;
     }).join('');
 
-    return `<div class="draft-section-header">${label}</div>${rows}`;
-  }).join('');
+    return `<div id="draft-round-${round}" class="draft-section-header" style="display:flex;align-items:center;justify-content:space-between">
+      <span>${label}</span><span style="font-size:10px">${badge}</span>
+    </div>${rows}`;
+  }).filter(Boolean).join('');
 
   setApp(`<div class="fade-in">
     <div class="section-header">
       <div class="section-title">Draft Board</div>
-      <div class="badge">${draftData.filter(p=>p.player&&p.player!=='-').length} picks</div>
+      <div class="badge">${filtered.filter(p=>p.player).length} picks</div>
     </div>
-    ${sections}
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <div class="seg-control" style="flex:1;margin-bottom:0;position:relative">
+        <select class="filter-select" id="draft-team-select" style="width:100%;padding-right:24px">${teamOpts}</select>
+        <span style="position:absolute;right:10px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--muted);font-size:10px">▾</span>
+      </div>
+      <div class="seg-control" style="flex:1;margin-bottom:0;position:relative">
+        <select class="filter-select" id="draft-conf-select" style="width:100%;padding-right:24px">${confOpts}</select>
+        <span style="position:absolute;right:10px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--muted);font-size:10px">▾</span>
+      </div>
+    </div>
+    ${jumpBtns}
+    ${sections || '<div class="empty-state"><div class="emoji">🏀</div><p>No picks match your filters.</p></div>'}
   </div>`);
 }
 
