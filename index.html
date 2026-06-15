@@ -905,6 +905,7 @@ async function fetchFreeAgents() {
 
     // Build roster set — anyone already in playerStats is NOT a free agent
     const rosterSet = new Set((playerStats||[]).map(p => p.Player));
+    let debugCount = 0;
 
     // Aggregate by player
     const agg = {};
@@ -926,7 +927,8 @@ async function fetchFreeAgents() {
       const ast    = Number(r.c[12]?.v)||0;
       const mins   = Number(r.c[9]?.v)||0;
       const isDNP    = String(r.c[7]?.v||'') === 'DNP';
-      const athleteId = String(r.c[14]?.v||'').trim() || player; // fallback to name if no ID
+      const athleteId = String(r.c[14]?.v||'').trim() || player;
+      if (debugCount < 5) { console.log('FA row sample:', {player, team, athleteId, rawId: r.c[14]?.v}); debugCount++; } // fallback to name if no ID
 
       if (!agg[athleteId]) {
         agg[athleteId] = { Player:player, School:school, Conference:conf,
