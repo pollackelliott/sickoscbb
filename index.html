@@ -233,7 +233,7 @@
   .toggle-thumb { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; background: #fff; border-radius: 50%; transition: transform 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.25); pointer-events: none; }
   .toggle-switch input:checked ~ .toggle-track { background: var(--accent); }
   .toggle-switch input:checked ~ .toggle-thumb { transform: translateX(18px); }
-  .fa-badge { font-size: 9px; font-weight: 400; padding: 1px 6px; border-radius: 3px; background: rgba(138,101,53,0.15); color: var(--muted); letter-spacing: 0.5px; margin-left: 4px; }
+  .fa-badge { font-size: 9px; font-weight: 400; padding: 1px 6px; border-radius: 3px; background: rgba(138,101,53,0.15); color: var(--muted); letter-spacing: 0.3px; margin-left: 4px; }
   .tap-hint { font-family: var(--font-mono); font-size: 9px; color: var(--muted); margin-top: 3px; }
 
   /* ── SCHOOL NAMEPLATE ── */
@@ -925,17 +925,19 @@ async function fetchFreeAgents() {
       const reb    = Number(r.c[11]?.v)||0;
       const ast    = Number(r.c[12]?.v)||0;
       const mins   = Number(r.c[9]?.v)||0;
-      const isDNP  = String(r.c[7]?.v||'') === 'DNP';
+      const isDNP    = String(r.c[7]?.v||'') === 'DNP';
+      const athleteId = String(r.c[14]?.v||'').trim() || player; // fallback to name if no ID
 
-      if (!agg[player]) {
-        agg[player] = { Player:player, School:school, Conference:conf,
+      if (!agg[athleteId]) {
+        agg[athleteId] = { Player:player, School:school, Conference:conf,
+                        AthleteId:athleteId,
                         Team:'Free Agent', RosterStatus:'Free Agent', DraftRound:'',
                         totalPRA:0, totalPts:0, totalReb:0, totalAst:0,
                         totalMins:0, gp:0, gpAll:0 };
       }
-      // Store raw row for game log view
-      if (!faRawLogs[player]) faRawLogs[player] = [];
-      faRawLogs[player].push({
+      // Store raw row for game log view, keyed by athleteId
+      if (!faRawLogs[athleteId]) faRawLogs[athleteId] = [];
+      faRawLogs[athleteId].push({
         _ymd:         parseDate(r.c[2]?.v),
         Opponent:     String(r.c[6]?.v||'').trim(),
         RosterStatus: 'Free Agent',
@@ -949,14 +951,14 @@ async function fetchFreeAgents() {
         Player:       player,
         School:       school,
       });
-      agg[player].gpAll++;
+      agg[athleteId].gpAll++;
       if (!isDNP) {
-        agg[player].gp++;
-        agg[player].totalPRA += pra;
-        agg[player].totalPts += pts;
-        agg[player].totalReb += reb;
-        agg[player].totalAst += ast;
-        agg[player].totalMins += mins;
+        agg[athleteId].gp++;
+        agg[athleteId].totalPRA += pra;
+        agg[athleteId].totalPts += pts;
+        agg[athleteId].totalReb += reb;
+        agg[athleteId].totalAst += ast;
+        agg[athleteId].totalMins += mins;
       }
     }
 
@@ -967,6 +969,7 @@ async function fetchFreeAgents() {
         const prag = p.totalPRA / gp;
         return {
           Player:       p.Player,
+          AthleteId:    p.AthleteId,
           School:       p.School,
           Conference:   p.Conference,
           Team:         'Free Agent',
@@ -1437,14 +1440,24 @@ function viewTeam(team) {
 }
 
 // ─── PLAYER GAME LOG ───────────────────────────────────────────────────────────
-function viewPlayerLog(team, player) {
-  pushNav(() => viewPlayerLog(team, player));
+function viewPlayerLog(team, playerArg) {
+  pushNav(() => viewPlayerLog(team, playerArg));
 
   const isFA = team === 'Free Agent';
 
-  // For free agents, use faRawLogs; for rostered players use gameLog
+  // FA cards pass 'fa:athleteId' — decode it
+  let player    = playerArg;
+  let athleteId = null;
+  if (isFA && playerArg.startsWith('fa:')) {
+    athleteId = playerArg.slice(3);
+    // Look up display name from freeAgents
+    const faEntry = freeAgents.find(r => r.AthleteId === athleteId);
+    player = faEntry ? faEntry.Player : athleteId;
+  }
+
+  // For free agents use faRawLogs keyed by athleteId; for rostered use gameLog
   const logs = isFA
-    ? (faRawLogs[player] || []).sort((a,b) => (a._ymd||'').localeCompare(b._ymd||''))
+    ? (faRawLogs[athleteId] || faRawLogs[player] || []).sort((a,b) => (a._ymd||'').localeCompare(b._ymd||''))
     : (gameLog||[])
         .filter(r => r.Team === team && r.Player === player)
         .sort((a,b) => a._ymd.localeCompare(b._ymd));
@@ -1485,7 +1498,9 @@ function viewPlayerLog(team, player) {
         <div style="font-size:12px;color:var(--muted);margin-top:3px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
           ${(()=>{
             if (isFA) {
-              const fa = freeAgents.find(r=>r.Player===player);
+              const fa = athleteId
+                ? freeAgents.find(r=>r.AthleteId===athleteId)
+                : freeAgents.find(r=>r.Player===player);
               return fa ? `${schoolTag(fa.School||'')} <span>${fa.Conference||''}</span>` : '';
             }
             const ps = (playerStats||[]).find(r=>r.Player===player&&r.Team===team);
@@ -1562,11 +1577,12 @@ function renderStats() {
          <div class="stat-col"><div class="stat-val sm">${(Number(r.RPG)||0).toFixed(1)}</div><div class="stat-key">RPG</div></div>
          <div class="stat-col"><div class="stat-val sm">${(Number(r.APG)||0).toFixed(1)}</div><div class="stat-key">APG</div></div>`;
 
-    return `<div class="stats-card ${isMe?'is-my-player':''} ${isFA?'is-fa':''}" data-action="view-player" data-team="${r.Team}" data-player="${r.Player}">
+    const dataPlayer = isFA ? 'fa:' + (r.AthleteId||r.Player) : r.Player;
+    return `<div class="stats-card ${isMe?'is-my-player':''} ${isFA?'is-fa':''}" data-action="view-player" data-team="${r.Team}" data-player="${dataPlayer}">
       <div class="stat-player-info">
         <div class="stat-player-name">${r.Player}</div>
         <div class="stat-player-meta">${schoolTag(r.School||'')} ${r.Conference||''}
-          ${!isFA ? `<span class="player-status ${sCls}" style="padding:1px 5px;font-size:9px;margin-left:4px">${statusLabel}</span>` : ''}
+          ${!isFA ? '<span class="player-status ' + sCls + '" style="padding:1px 5px;font-size:9px;margin-left:4px">' + statusLabel + '</span>' : ''}
         </div>
         <div class="stat-player-meta" style="margin-top:2px">${teamLine}</div>
       </div>
