@@ -1595,10 +1595,16 @@ function renderStats() {
     </div>`;
   }).join('');
 
-  // FA toggle
+  // FA toggle — count filtered by conference only (not by team)
+  const faConfCount = faLoaded
+    ? (statConfFilter === 'ALL'
+        ? freeAgents.length
+        : freeAgents.filter(p => p.Conference === statConfFilter).length)
+    : 0;
   const faToggleLabel = faLoading ? 'Loading free agents…'
-                      : faLoaded  ? `Free agents (${freeAgents.length.toLocaleString()} above ${FA_MIN_PRAG} PRA/G)`
-                      :             'Show free agents';
+                      : !faEnabled ? 'Show free agents'
+                      : faLoaded   ? `Free agents (${faConfCount.toLocaleString()} above ${FA_MIN_PRAG} PRA/G)`
+                      :              'Show free agents';
   const faToggle = `<div class="fa-toggle-row">
     <span class="fa-toggle-label ${faEnabled?'active':''}">${faToggleLabel}</span>
     <label class="toggle-switch" data-action="toggle-fa">
