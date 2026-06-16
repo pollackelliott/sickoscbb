@@ -791,10 +791,13 @@ let statSort       = 'total';
 let statTeamFilter = 'ALL';
 let statConfFilter = 'ALL';
 let statView       = 'total';
+let statsScope     = 'sicko';  // 'sicko' = rostered Sicko games only, 'all' = full college season stats
 let faEnabled      = false;   // has user toggled free agents on?
 let faLoaded       = false;   // has the FA data been fetched yet?
 let faLoading      = false;   // fetch in progress?
 let freeAgents     = [];      // aggregated FA player stats
+let allSeasonStats = [];      // full-season stats for every player in the master game log
+let allSeasonRawLogs = {};    // player|school -> full-season game log rows
 let faRawLogs      = {};      // athleteId → game log rows
 let psResCache     = null;    // raw psRes rows cached for activeRosterSet building
 // Navigation stack for back button
@@ -838,6 +841,11 @@ document.addEventListener('click', function(e) {
   else if (action === 'back') { navBack(); }
   else if (action === 'set-stat-sort') { statSort = el.dataset.sort; renderStats(); }
   else if (action === 'set-stat-view') { statView = el.dataset.view; statSort = statView === 'total' ? 'total' : 'prag'; renderStats(); }
+  else if (action === 'set-stats-scope') {
+    statsScope = el.dataset.scope;
+    if (statsScope === 'all' && !faLoaded && !faLoading) fetchFreeAgents();
+    else renderStats();
+  }
   else if (action === 'toggle-fa') {
     faEnabled = !faEnabled;
     if (faEnabled && !faLoaded && !faLoading) fetchFreeAgents();
@@ -916,16 +924,50 @@ async function fetchFreeAgents() {
       }
     }
 
-    // Aggregate by player
+    // Aggregate by player. We build two datasets from the same master log:
+    // 1) allAgg: every player, every game, for the Stats page's "All Games" mode
+    // 2) agg: free agents only, preserving the existing free-agent toggle behavior
     const agg = {};
+    const allAgg = {};
+
+    function addToAgg(store, rawStore, aggKey, player, school, conf, teamLabel, statusLabel, r, pra, pts, reb, ast, mins, isDNP) {
+      if (!store[aggKey]) {
+        store[aggKey] = { Player:player, School:school, Conference:conf,
+                          AggKey:aggKey,
+                          Team:teamLabel, RosterStatus:statusLabel, DraftRound:'',
+                          totalPRA:0, totalPts:0, totalReb:0, totalAst:0,
+                          totalMins:0, gp:0, gpAll:0 };
+      }
+      if (!rawStore[aggKey]) rawStore[aggKey] = [];
+      rawStore[aggKey].push({
+        _ymd:         parseDate(r.c[2]?.v),
+        Opponent:     String(r.c[6]?.v||'').trim(),
+        RosterStatus: statusLabel,
+        GameNumber:   String(r.c[7]?.v||''),
+        Minutes:      mins,
+        Points:       pts,
+        Rebounds:     reb,
+        Assists:      ast,
+        PRA:          pra,
+        Team:         teamLabel,
+        Player:       player,
+        School:       school,
+      });
+      store[aggKey].gpAll++;
+      if (!isDNP) {
+        store[aggKey].gp++;
+        store[aggKey].totalPRA += pra;
+        store[aggKey].totalPts += pts;
+        store[aggKey].totalReb += reb;
+        store[aggKey].totalAst += ast;
+        store[aggKey].totalMins += mins;
+      }
+    }
+
     for (let i = 0; i < rows.length; i++) {
       const r      = rows[i];
       const player = String(r.c[3]?.v||'').trim();
-      const team   = String(r.c[1]?.v||'').trim();
       if (!player) continue;
-      // Skip currently active (Starter/Bench) players — they are not free agents
-      if (activeRosterSet.has(player)) continue;
-      // Include ALL games for this player (rostered era + free agent era = full season)
 
       const school  = String(r.c[4]?.v||'').trim();
       const conf    = String(r.c[5]?.v||'').trim();
@@ -938,64 +980,42 @@ async function fetchFreeAgents() {
       // Key on player+school to uniquely identify same-name players at different schools
       const aggKey  = player + '|' + school;
 
-      if (!agg[aggKey]) {
-        agg[aggKey] = { Player:player, School:school, Conference:conf,
-                        AggKey:aggKey,
-                        Team:'Free Agent', RosterStatus:'Free Agent', DraftRound:'',
-                        totalPRA:0, totalPts:0, totalReb:0, totalAst:0,
-                        totalMins:0, gp:0, gpAll:0 };
-      }
-      if (!faRawLogs[aggKey]) faRawLogs[aggKey] = [];
-      faRawLogs[aggKey].push({
-        _ymd:         parseDate(r.c[2]?.v),
-        Opponent:     String(r.c[6]?.v||'').trim(),
-        RosterStatus: 'Free Agent',
-        GameNumber:   String(r.c[7]?.v||''),
-        Minutes:      Number(r.c[9]?.v)||0,
-        Points:       Number(r.c[10]?.v)||0,
-        Rebounds:     Number(r.c[11]?.v)||0,
-        Assists:      Number(r.c[12]?.v)||0,
-        PRA:          pra,
-        Team:         'Free Agent',
-        Player:       player,
-        School:       school,
-      });
-      agg[aggKey].gpAll++;
-      if (!isDNP) {
-        agg[aggKey].gp++;
-        agg[aggKey].totalPRA += pra;
-        agg[aggKey].totalPts += pts;
-        agg[aggKey].totalReb += reb;
-        agg[aggKey].totalAst += ast;
-        agg[aggKey].totalMins += mins;
-      }
+      addToAgg(allAgg, allSeasonRawLogs, aggKey, player, school, conf, 'All Games', 'All Games', r, pra, pts, reb, ast, mins, isDNP);
+
+      // Existing FA behavior: skip currently active Starter/Bench players
+      if (activeRosterSet.has(player)) continue;
+      addToAgg(agg, faRawLogs, aggKey, player, school, conf, 'Free Agent', 'Free Agent', r, pra, pts, reb, ast, mins, isDNP);
     }
+
+    function toPlayerStatsLike(p, teamOverride, statusOverride, draftRoundOverride) {
+      const gp   = p.gp || 1;
+      const prag = p.totalPRA / gp;
+      return {
+        Player:       p.Player,
+        AggKey:       p.AggKey,
+        School:       p.School,
+        Conference:   p.Conference,
+        Team:         teamOverride ?? p.Team,
+        RosterStatus: statusOverride ?? p.RosterStatus,
+        DraftRound:   draftRoundOverride ?? p.DraftRound,
+        GamesPlayed:  p.gp,
+        GPplusDNP:    p.gpAll,
+        TotalPRA:     p.totalPRA,
+        PRAG:         Math.round(prag * 100) / 100,
+        PPG:          Math.round(p.totalPts / gp * 100) / 100,
+        RPG:          Math.round(p.totalReb / gp * 100) / 100,
+        APG:          Math.round(p.totalAst / gp * 100) / 100,
+        Points:       p.totalPts,
+        Rebounds:     p.totalReb,
+        Assists:      p.totalAst,
+      };
+    }
+
+    allSeasonStats = Object.values(allAgg).map(p => toPlayerStatsLike(p));
 
     // Convert to playerStats-compatible objects, apply threshold
     freeAgents = Object.values(agg)
-      .map(p => {
-        const gp   = p.gp || 1;
-        const prag = p.totalPRA / gp;
-        return {
-          Player:       p.Player,
-          AggKey:       p.AggKey,
-          School:       p.School,
-          Conference:   p.Conference,
-          Team:         'Free Agent',
-          RosterStatus: 'Free Agent',
-          DraftRound:   '',
-          GamesPlayed:  p.gp,
-          GPplusDNP:    p.gpAll,
-          TotalPRA:     p.totalPRA,
-          PRAG:         Math.round(prag * 100) / 100,
-          PPG:          Math.round(p.totalPts / gp * 100) / 100,
-          RPG:          Math.round(p.totalReb / gp * 100) / 100,
-          APG:          Math.round(p.totalAst / gp * 100) / 100,
-          Points:       p.totalPts,
-          Rebounds:     p.totalReb,
-          Assists:      p.totalAst,
-        };
-      })
+      .map(p => toPlayerStatsLike(p))
       .filter(p => p.PRAG >= FA_MIN_PRAG);
 
     console.log(`Free agents loaded: ${freeAgents.length} players above ${FA_MIN_PRAG} PRA/G`);
@@ -1454,28 +1474,34 @@ function viewPlayerLog(team, playerArg) {
   pushNav(() => viewPlayerLog(team, playerArg));
 
   const isFA = team === 'Free Agent';
+  const isAllGamesLog = playerArg.startsWith('all:');
 
-  // FA cards pass 'fa:player|school' — decode it
+  // FA cards pass 'fa:player|school'; All Games cards pass 'all:player|school'
   let player    = playerArg;
   let aggKey    = null;
   if (isFA && playerArg.startsWith('fa:')) {
     aggKey = playerArg.slice(3);
-    // Look up display name from freeAgents
     const faEntry = freeAgents.find(r => r.AggKey === aggKey);
     player = faEntry ? faEntry.Player : aggKey.split('|')[0];
+  } else if (isAllGamesLog) {
+    aggKey = playerArg.slice(4);
+    const allEntry = allSeasonStats.find(r => r.AggKey === aggKey);
+    player = allEntry ? allEntry.Player : aggKey.split('|')[0];
   }
 
-  // For free agents use faRawLogs keyed by aggKey; for rostered use gameLog
+  // For free agents and All Games mode, use the full-season master log; otherwise use Sicko gameLog
   const logs = isFA
     ? (faRawLogs[aggKey] || faRawLogs[player] || []).sort((a,b) => (a._ymd||'').localeCompare(b._ymd||''))
-    : (gameLog||[])
-        .filter(r => r.Team === team && r.Player === player)
-        .sort((a,b) => a._ymd.localeCompare(b._ymd));
+    : isAllGamesLog
+      ? (allSeasonRawLogs[aggKey] || []).sort((a,b) => (a._ymd||'').localeCompare(b._ymd||''))
+      : (gameLog||[])
+          .filter(r => r.Team === team && r.Player === player)
+          .sort((a,b) => a._ymd.localeCompare(b._ymd));
 
-  const totalPRA = isFA
+  const totalPRA = (isFA || isAllGamesLog)
     ? logs.reduce((s,r) => s+(Number(r.PRA)||0), 0)
     : logs.filter(r => r.RosterStatus==='Starter').reduce((s,r) => s+(Number(r.PRA)||0), 0);
-  const gp = isFA
+  const gp = (isFA || isAllGamesLog)
     ? logs.filter(r => String(r.GameNumber) !== 'DNP').length
     : logs.filter(r => r.RosterStatus==='Starter').length;
 
@@ -1520,22 +1546,52 @@ function viewPlayerLog(team, playerArg) {
       </div>
     </div>
     <div class="totals-bar">
-      <div><div class="totals-label">${isFA ? 'Free Agent' : team}</div>
+      <div><div class="totals-label">${isFA ? 'Free Agent' : isAllGamesLog ? 'All Games' : team}</div>
            <div class="totals-sub">${gp} games played · ${logs.length} total</div></div>
       <div style="text-align:right"><div class="totals-val">${totalPRA.toLocaleString()}</div>
-           <div class="totals-sub">${isFA ? 'Total PRA' : 'Starter PRA'}</div></div>
+           <div class="totals-sub">${(isFA || isAllGamesLog) ? 'Total PRA' : 'Starter PRA'}</div></div>
     </div>
     <div class="game-card">${rows||'<div class="empty-state"><p>No games found</p></div>'}</div>
   </div>`);
 }
 
 // ─── STATS ─────────────────────────────────────────────────────────────────────
+function rosterPlayersForStatsScope() {
+  if (statsScope !== 'all' || !faLoaded) return [...playerStats];
+
+  const allByKey = new Map(allSeasonStats.map(p => [p.AggKey, p]));
+
+  return playerStats.map(r => {
+    const aggKey = String(r.Player||'').trim() + '|' + String(r.School||'').trim();
+    const full = allByKey.get(aggKey);
+    if (!full) return r;
+
+    return {
+      ...r,
+      AggKey:       aggKey,
+      GamesPlayed:  full.GamesPlayed,
+      GPplusDNP:    full.GPplusDNP,
+      TotalPRA:     full.TotalPRA,
+      PRAG:         full.PRAG,
+      PPG:          full.PPG,
+      RPG:          full.RPG,
+      APG:          full.APG,
+      Points:       full.Points,
+      Rebounds:     full.Rebounds,
+      Assists:      full.Assists,
+      _allGames:    true,
+    };
+  });
+}
+
 function renderStats() {
   navStack = [];
   if (!playerStats) { setApp(loadingHTML()); return; }
 
-  // Merge free agents if enabled
-  const allPlayers = (faEnabled && faLoaded) ? [...playerStats, ...freeAgents] : [...playerStats];
+  // Merge free agents if enabled. In All Games mode, rostered players keep their
+  // Sicko metadata, but their stats are swapped to full-season master-log totals.
+  const rosterPlayers = rosterPlayersForStatsScope();
+  const allPlayers = (faEnabled && faLoaded) ? [...rosterPlayers, ...freeAgents] : [...rosterPlayers];
 
   // Team dropdown — Free Agent first (after All), then managers sorted by last name
   const sortedSickos = [...allSickos].sort((a,b) => {
@@ -1587,7 +1643,9 @@ function renderStats() {
          <div class="stat-col"><div class="stat-val sm">${(Number(r.RPG)||0).toFixed(1)}</div><div class="stat-key">RPG</div></div>
          <div class="stat-col"><div class="stat-val sm">${(Number(r.APG)||0).toFixed(1)}</div><div class="stat-key">APG</div></div>`;
 
-    const dataPlayer = isFA ? 'fa:' + (r.AggKey||r.Player) : r.Player;
+    const dataPlayer = isFA ? 'fa:' + (r.AggKey||r.Player)
+                     : (statsScope === 'all' && faLoaded && r.AggKey) ? 'all:' + r.AggKey
+                     : r.Player;
     return `<div class="stats-card ${isMe?'is-my-player':''} ${isFA?'is-fa':''}" data-action="view-player" data-team="${r.Team}" data-player="${dataPlayer}">
       <div class="stat-player-info">
         <div class="stat-player-name">${r.Player}</div>
@@ -1629,7 +1687,10 @@ function renderStats() {
   setApp(`<div class="fade-in">
     <div class="section-header">
       <div class="section-title">PLAYER STATS</div>
-      <div class="badge">Full Season</div>
+      <div class="seg-control" style="margin-bottom:0;width:190px;padding:2px">
+        <button class="seg-btn ${statsScope==='sicko'?'active':''}" style="font-size:10px;padding:5px 3px" data-action="set-stats-scope" data-scope="sicko">Sicko Games Only</button>
+        <button class="seg-btn ${statsScope==='all'?'active':''}" style="font-size:10px;padding:5px 3px" data-action="set-stats-scope" data-scope="all">All Games</button>
+      </div>
     </div>
     ${faToggle}
     <div style="display:flex;gap:8px;margin-bottom:8px">
