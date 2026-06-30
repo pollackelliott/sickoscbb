@@ -203,6 +203,9 @@
   .filter-row { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
   .filter-label { font-family: var(--font-mono); font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; white-space: nowrap; }
   .filter-select { flex: 1; background: none; border: none; border-radius: 7px; color: var(--muted); font-family: var(--font-body); font-size: 11px; font-weight: 700; padding: 5px 4px; text-align: center; appearance: none; -webkit-appearance: none; cursor: pointer; }
+  .search-input { width: 100%; background: var(--surface); border: 1.5px solid var(--border); border-radius: 10px; color: var(--text); font-family: var(--font-body); font-size: 13px; font-weight: 600; padding: 10px 12px; margin-bottom: 10px; outline: none; }
+  .search-input::placeholder { color: var(--muted); opacity: 0.75; }
+  .search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(196,85,8,0.12); }
   .sort-btn { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 11px; font-weight: 600; padding: 5px 10px; cursor: pointer; white-space: nowrap; font-family: var(--font-body); transition: all 0.15s; }
   .sort-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
@@ -218,6 +221,13 @@
   .stat-val { font-size: 16px; font-weight: 800; line-height: 1; color: var(--text); }
   .stat-val.sm { font-size: 14px; }
   .stat-key { font-family: var(--font-mono); font-size: 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; }
+  .trend-section { margin-bottom: 18px; }
+  .trend-section-title { font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted); margin: 14px 0 8px; }
+  .trend-chip { font-family: var(--font-mono); font-size: 9px; font-weight: 700; border-radius: 4px; padding: 2px 6px; white-space: nowrap; }
+  .trend-chip.hot { background: rgba(42,110,42,0.15); color: var(--green); }
+  .trend-chip.cold { background: rgba(184,50,50,0.12); color: var(--red); }
+  .last3-strip { display: flex; gap: 4px; margin-top: 5px; }
+  .last3-pill { font-family: var(--font-mono); font-size: 9px; color: var(--muted); background: var(--surface2); border-radius: 4px; padding: 2px 5px; }
 
   /* Segmented control */
   .seg-control { display: flex; background: var(--surface); border: 1.5px solid var(--border); border-radius: 10px; padding: 2px; margin-bottom: 10px; gap: 2px; }
@@ -354,9 +364,10 @@
   </div>
   <div class="tabs" id="tab-bar">
     <div class="tab active"  data-tab="standings">Standings</div>
-    <div class="tab"         data-tab="roster">Roster</div>
+    <div class="tab"         data-tab="roster">Rosters</div>
     <div class="tab"         data-tab="scoreboard">Scoreboard</div>
     <div class="tab"         data-tab="stats">Stats</div>
+    <div class="tab"         data-tab="insights">Insights</div>
     <div class="tab"         data-tab="draft">Draft</div>
     <div class="tab"         data-tab="transactions">Transactions</div>
   </div>
@@ -843,6 +854,8 @@ let statConfFilter = 'ALL';
 let statView       = 'total';
 let statsScope     = 'sicko';  // 'sicko' = rostered Sicko games only, 'all' = full college season stats
 let rosterTeamFilter = myTeam || null;
+let rosterSearch   = '';
+let statSearch     = '';
 let faEnabled      = false;   // has user toggled free agents on?
 let faLoaded       = false;   // has the FA data been fetched yet?
 let faLoading      = false;   // fetch in progress?
@@ -881,6 +894,7 @@ function emptyIndexes() {
     transactionsByTeam: new Map(),
     draftCountsByRound: new Map(),
     draftRoundOrder: [],
+    trendPlayers: [],
   };
 }
 
@@ -891,6 +905,63 @@ function mapListPush(map, key, value) {
 
 function teamPlayerKey(team, player) {
   return `${String(team ?? '').trim()}||${String(player ?? '').trim()}`;
+}
+
+function playerSearchText(row) {
+  return [
+    row.Player, row.Team, row.School, row.Conference,
+    row.player, row.team, row.school, row.conf
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function matchesPlayerSearch(row, query) {
+  const q = String(query || '').trim().toLowerCase();
+  return !q || playerSearchText(row).includes(q);
+}
+
+function refocusInput(id, value) {
+  setTimeout(() => {
+    const input = document.getElementById(id);
+    if (!input) return;
+    input.focus();
+    try { input.setSelectionRange(String(value || '').length, String(value || '').length); } catch(_) {}
+  }, 0);
+}
+
+function buildTrendRows() {
+  const statByKey = new Map((playerStats || []).map(r => [teamPlayerKey(r.Team, r.Player), r]));
+  const rows = [];
+
+  indexes.playerLogsByTeamPlayer.forEach((logs, key) => {
+    const played = logs
+      .filter(r => String(r.GameNumber) !== 'DNP' && r._ymd)
+      .sort((a,b) => a._ymd.localeCompare(b._ymd));
+    if (played.length < 3) return;
+
+    const last3 = played.slice(-3);
+    const total = last3.reduce((s,r) => s + num(r.PRA), 0);
+    const last3Avg = total / 3;
+    const stat = statByKey.get(key) || {};
+    const seasonAvg = num(stat.PRAG) || (played.reduce((s,r) => s + num(r.PRA), 0) / played.length);
+    const delta = last3Avg - seasonAvg;
+    const latest = last3[last3.length - 1];
+
+    rows.push({
+      Team: latest.Team,
+      Player: latest.Player,
+      School: latest.School || stat.School,
+      Conference: latest.Conference || stat.Conference,
+      RosterStatus: stat.RosterStatus || latest.RosterStatus,
+      Last3PRA: last3.map(r => num(r.PRA)),
+      Last3Avg: Math.round(last3Avg * 10) / 10,
+      SeasonAvg: Math.round(seasonAvg * 10) / 10,
+      Delta: Math.round(delta * 10) / 10,
+      LatestDate: latest._ymd,
+      GamesPlayed: played.length,
+    });
+  });
+
+  return rows;
 }
 
 function buildIndexes() {
@@ -916,6 +987,7 @@ function buildIndexes() {
     }
     indexes.draftCountsByRound.set(row.round, (indexes.draftCountsByRound.get(row.round) || 0) + 1);
   });
+  indexes.trendPlayers = buildTrendRows();
 }
 
 // ─── EVENT DELEGATION ──────────────────────────────────────────────────────────
@@ -933,6 +1005,7 @@ document.addEventListener('click', function(e) {
     // Push current view as the back destination
     const returnFn = currentTab === 'draft'         ? renderDraft
                    : currentTab === 'transactions'  ? renderTransactions
+                   : currentTab === 'insights'      ? renderInsights
                    : currentTab === 'roster'        ? renderRoster
                    : currentTab === 'stats'         ? renderStats
                    : currentTab === 'scoreboard'    ? renderScoreboard
@@ -969,6 +1042,19 @@ document.addEventListener('change', function(e) {
   if (e.target.id === 'draft-team-select') { draftTeamFilter = e.target.value; renderDraft(); }
   if (e.target.id === 'draft-conf-select') { draftConfFilter = e.target.value; renderDraft(); }
   if (e.target.id === 'date-picker-input') { onPickerChange(e.target.value); }
+});
+
+document.addEventListener('input', function(e) {
+  if (e.target.id === 'stat-search-input') {
+    statSearch = e.target.value;
+    renderStats();
+    refocusInput('stat-search-input', statSearch);
+  }
+  if (e.target.id === 'roster-search-input') {
+    rosterSearch = e.target.value;
+    renderRoster();
+    refocusInput('roster-search-input', rosterSearch);
+  }
 });
 
 // Static header buttons
@@ -1409,6 +1495,7 @@ function renderCurrentTab(errors) {
     else if (currentTab === 'standings')    renderStandings();
     else if (currentTab === 'roster')       renderRoster();
     else if (currentTab === 'stats')        renderStats();
+    else if (currentTab === 'insights')     renderInsights();
     else if (currentTab === 'draft')        renderDraft();
     else if (currentTab === 'transactions') renderTransactions();
   } catch(e) {
@@ -1619,7 +1706,8 @@ function renderRoster() {
                      : allSickos.includes(myTeam)           ? myTeam
                      : allSickos[0];
   rosterTeamFilter = selectedTeam;
-  const rows = rosterRowsForTeam(selectedTeam);
+  const allRows = rosterRowsForTeam(selectedTeam);
+  const rows = allRows.filter(r => matchesPlayerSearch(r, rosterSearch));
   const isMe = selectedTeam === myTeam;
   const teamOpts = allSickos.map(t =>
     `<option value="${attr(t)}" ${selectedTeam===t?'selected':''}>${esc(t)}${t===myTeam?' ★':''}</option>`
@@ -1628,14 +1716,15 @@ function renderRoster() {
   setApp(`<div class="fade-in">
     ${errorBannerHTML(loadErrors)}
     <div class="section-header">
-      <div class="section-title">ROSTER</div>
+      <div class="section-title">ROSTERS</div>
       <div class="badge">${isMe ? 'My Team' : esc(selectedTeam)}</div>
     </div>
     <div class="seg-control" style="margin-bottom:12px;position:relative">
       <select class="filter-select" id="roster-team-select" style="width:100%;padding-right:24px">${teamOpts}</select>
       <span style="position:absolute;right:10px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--muted);font-size:10px">▾</span>
     </div>
-    ${rosterSummaryHTML(selectedTeam, rows)}
+    <input class="search-input" id="roster-search-input" type="search" placeholder="Search this roster" value="${attr(rosterSearch)}" autocomplete="off">
+    ${rosterSummaryHTML(selectedTeam, allRows)}
     ${rosterCardsHTML(selectedTeam, rows)}
   </div>`);
 }
@@ -1740,6 +1829,79 @@ function viewPlayerLog(team, playerArg) {
   </div>`);
 }
 
+// ─── INSIGHTS ─────────────────────────────────────────────────────────────────
+function trendCardsHTML(rows, tone) {
+  if (!rows.length) {
+    return emptyStateHTML('', tone === 'hot' ? 'No hot players yet' : 'No cold players yet', 'Players need at least three played games to qualify.');
+  }
+
+  return rows.map(r => {
+    const rowTone = tone === 'mixed' ? (r.Delta >= 0 ? 'hot' : 'cold') : tone;
+    const status = r.RosterStatus || '';
+    const sCls = status==='Starter'?'status-starter':status==='Bench'?'status-bench':'status-inactive';
+    const deltaText = `${r.Delta >= 0 ? '+' : ''}${num(r.Delta).toFixed(1)}`;
+    const last3 = (r.Last3PRA || []).map(v => `<span class="last3-pill">${num(v)}</span>`).join('');
+    return `<div class="stats-card" data-action="view-player" data-team="${attr(r.Team)}" data-player="${attr(r.Player)}">
+      <div class="stat-player-info">
+        <div class="stat-player-name">${esc(r.Player)}</div>
+        <div class="stat-player-meta">${schoolTag(r.School||'')} ${esc(r.Conference||'')}
+          ${status ? `<span class="player-status ${sCls}" style="padding:1px 5px;font-size:9px;margin-left:4px">${esc(status)}</span>` : ''}
+        </div>
+        <div class="stat-player-meta" style="margin-top:2px"><span style="font-weight:700;color:var(--text)">${esc(r.Team)}</span> · season ${num(r.SeasonAvg).toFixed(1)} PRA/G</div>
+        <div class="last3-strip">${last3}</div>
+      </div>
+      <div class="stat-nums" style="gap:10px">
+        <div class="stat-col"><div class="stat-val" style="color:var(--accent)">${num(r.Last3Avg).toFixed(1)}</div><div class="stat-key">L3/G</div></div>
+        <div class="stat-col"><div class="trend-chip ${rowTone}">${esc(deltaText)}</div><div class="stat-key">TREND</div></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderInsights() {
+  navStack = [];
+  if (!gameLog || !playerStats) { setApp(loadingHTML()); return; }
+
+  const trends = indexes.trendPlayers || [];
+  if (!trends.length) {
+    setApp(emptyStateHTML('Insights', 'Not enough games yet', 'Insights need at least three played games for each player.', 'Retry data load', 'retry-init'));
+    return;
+  }
+
+  const hot = trends
+    .filter(r => r.Delta > 0)
+    .sort((a,b) => (b.Delta - a.Delta) || (b.Last3Avg - a.Last3Avg))
+    .slice(0, 12);
+  const cold = trends
+    .filter(r => r.Delta < 0)
+    .sort((a,b) => (a.Delta - b.Delta) || (a.Last3Avg - b.Last3Avg))
+    .slice(0, 12);
+  const leaders = [...trends]
+    .sort((a,b) => (b.Last3Avg - a.Last3Avg) || (b.Delta - a.Delta))
+    .slice(0, 8);
+
+  setApp(`<div class="fade-in">
+    ${errorBannerHTML(loadErrors)}
+    <div class="section-header">
+      <div class="section-title">INSIGHTS</div>
+      <div class="badge">${fmtInt(trends.length)} qualified</div>
+    </div>
+    <div class="data-note" style="margin-bottom:12px">Trend = last 3 played games PRA/G minus season PRA/G · DNPs excluded</div>
+    <div class="trend-section">
+      <div class="trend-section-title">Hottest Last 3</div>
+      ${trendCardsHTML(hot, 'hot')}
+    </div>
+    <div class="trend-section">
+      <div class="trend-section-title">Coldest Last 3</div>
+      ${trendCardsHTML(cold, 'cold')}
+    </div>
+    <div class="trend-section">
+      <div class="trend-section-title">Last 3 Leaders</div>
+      ${trendCardsHTML(leaders, 'mixed')}
+    </div>
+  </div>`);
+}
+
 // ─── STATS ─────────────────────────────────────────────────────────────────────
 function rosterPlayersForStatsScope() {
   if (statsScope !== 'all' || !faLoaded) return [...playerStats];
@@ -1795,6 +1957,7 @@ function renderStats() {
 
   let rows = statTeamFilter==='ALL' ? [...allPlayers] : allPlayers.filter(r => r.Team===statTeamFilter);
   if (statConfFilter !== 'ALL') rows = rows.filter(r => r.Conference === statConfFilter);
+  if (statSearch.trim()) rows = rows.filter(r => matchesPlayerSearch(r, statSearch));
 
   const sortKeys = {
     total:'TotalPRA', pts:'Points', reb:'Rebounds', ast:'Assists',
@@ -1879,6 +2042,7 @@ function renderStats() {
       </div>
     </div>
     ${faToggle}
+    <input class="search-input" id="stat-search-input" type="search" placeholder="Search players, teams, schools" value="${attr(statSearch)}" autocomplete="off">
     <div style="display:flex;gap:8px;margin-bottom:8px">
       <div class="seg-control" style="flex:1;margin-bottom:0;position:relative">
         <select class="filter-select" id="stat-team-select" style="width:100%;padding-right:24px">${teamOpts}</select>
@@ -1897,8 +2061,8 @@ function renderStats() {
       <span class="filter-label">Sort:</span>
       ${sortBtns}
     </div>
-    ${cards || emptyStateHTML('Stats', 'No players match', 'Try a different team, conference, or stats view.')}
-    ${rows.length>limit?`<div class="data-note">Showing top ${limit} · filter by team or conference to see more</div>`:''}
+    ${cards || emptyStateHTML('Stats', 'No players match', 'Try a different search, team, conference, or stats view.')}
+    ${rows.length>limit?`<div class="data-note">Showing top ${limit} · search or filter to narrow the list</div>`:''}
   </div>`);
 }
 
